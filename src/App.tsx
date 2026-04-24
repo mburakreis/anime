@@ -1,7 +1,20 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { getPictures, getTopAnime } from "./jikan";
 import type { Anime, Picture, UserEntry, WatchStatus } from "./types";
-import { getAllEntries, getEntry, setRating, setStatus } from "./storage";
+import {
+  getAllEntries,
+  getEntry,
+  setRating as lsSetRating,
+  setStatus as lsSetStatus,
+} from "./storage";
+import {
+  fetchAuth,
+  fetchList,
+  fromMalStatus,
+  updateStatus as malUpdateStatus,
+  type AuthInfo,
+  type MalListItem,
+} from "./mal";
 
 const STATUS_LABELS: Record<Exclude<WatchStatus, null>, string> = {
   watched: "İzledim",
@@ -20,15 +33,30 @@ function romajiTitle(a: Anime): string {
 }
 
 function englishTitle(a: Anime): string | null {
-  return (
-    a.title_english ??
-    titleOfType(a, "English") ??
-    null
-  );
+  return a.title_english ?? titleOfType(a, "English") ?? null;
 }
 
 function japaneseTitle(a: Anime): string | null {
   return a.title_japanese ?? titleOfType(a, "Japanese") ?? null;
+}
+
+function malListToEntries(items: MalListItem[]): Record<string, UserEntry> {
+  const out: Record<string, UserEntry> = {};
+  for (const it of items) {
+    out[it.mal_id] = {
+      status: fromMalStatus(it.status),
+      rating: it.score > 0 ? it.score : null,
+      updatedAt: Date.parse(it.updated_at) || 0,
+    };
+  }
+  return out;
+}
+
+const HISTORY_MAX = 5;
+
+function entryHasMark(e: UserEntry | undefined): boolean {
+  if (!e) return false;
+  return e.status != null || e.rating != null;
 }
 
 export default function App() {
@@ -37,23 +65,57 @@ export default function App() {
   const [loadingList, setLoadingList] = useState(false);
   const [index, setIndex] = useState(0);
   const [pictures, setPictures] = useState<Picture[]>([]);
+  const [auth, setAuth] = useState<AuthInfo | null>(null);
   const [entries, setEntries] = useState<Record<string, UserEntry>>(
     () => getAllEntries()
   );
+  const [history, setHistory] = useState<number[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [sync, setSync] = useState<
+    | { state: "idle" }
+    | { state: "syncing" }
+    | { state: "ok"; at: number }
+    | { state: "error"; message: string }
+  >({ state: "idle" });
 
-  const current = list[index];
+  const historySet = useMemo(() => new Set(history), [history]);
+  const visible = useMemo(
+    () =>
+      list.filter(
+        (a) => !entryHasMark(entries[a.mal_id]) || historySet.has(a.mal_id)
+      ),
+    [list, entries, historySet]
+  );
 
-  // Load first page
+  const current = visible[index];
+  const isAuthed = auth?.authenticated === true;
+
+  useEffect(() => {
+    fetchAuth()
+      .then(setAuth)
+      .catch(() => setAuth({ authenticated: false }));
+  }, []);
+
+  useEffect(() => {
+    if (!isAuthed) return;
+    let cancelled = false;
+    fetchList()
+      .then((items) => {
+        if (cancelled) return;
+        setEntries(malListToEntries(items));
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [isAuthed]);
+
   useEffect(() => {
     let cancelled = false;
     setLoadingList(true);
     setError(null);
     getTopAnime(1)
-      .then((data) => {
-        if (cancelled) return;
-        setList(data);
-      })
+      .then((data) => !cancelled && setList(data))
       .catch((e) => !cancelled && setError(String(e)))
       .finally(() => !cancelled && setLoadingList(false));
     return () => {
@@ -61,11 +123,11 @@ export default function App() {
     };
   }, []);
 
-  // Load more when nearing the end
   useEffect(() => {
-    if (!list.length) return;
-    if (index < list.length - 5) return;
     if (loadingList) return;
+    if (!list.length) return;
+    const needMore = visible.length === 0 || index >= visible.length - 5;
+    if (!needMore) return;
     const next = page + 1;
     setLoadingList(true);
     getTopAnime(next)
@@ -78,9 +140,8 @@ export default function App() {
       })
       .catch(() => {})
       .finally(() => setLoadingList(false));
-  }, [index, list.length, page, loadingList]);
+  }, [index, visible.length, list.length, page, loadingList]);
 
-  // Fetch pictures for current anime
   useEffect(() => {
     if (!current) return;
     let cancelled = false;
@@ -93,11 +154,8 @@ export default function App() {
     };
   }, [current?.mal_id]);
 
-  // Arrow key navigation
-  const indexRef = useRef(index);
-  indexRef.current = index;
-  const listLenRef = useRef(list.length);
-  listLenRef.current = list.length;
+  const listLenRef = useRef(visible.length);
+  listLenRef.current = visible.length;
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement | null;
@@ -124,17 +182,113 @@ export default function App() {
     return entries[current.mal_id] ?? getEntry(current.mal_id);
   }, [current, entries]);
 
-  function onSetStatus(status: WatchStatus) {
-    if (!current) return;
-    const next = setStatus(current.mal_id, status);
-    setEntries((e) => ({ ...e, [current.mal_id]: next }));
+  async function syncToMal(malId: number, fn: () => Promise<void>) {
+    setSync({ state: "syncing" });
+    try {
+      await fn();
+      setSync({ state: "ok", at: Date.now() });
+    } catch (err) {
+      setSync({
+        state: "error",
+        message: err instanceof Error ? err.message : String(err),
+      });
+      console.error("MAL sync error", { malId, err });
+    }
   }
 
-  function onSetRating(rating: number | null) {
-    if (!current) return;
-    const next = setRating(current.mal_id, rating);
-    setEntries((e) => ({ ...e, [current.mal_id]: next }));
+  function pushHistory(malId: number) {
+    setHistory((h) => {
+      const without = h.filter((id) => id !== malId);
+      const next = [...without, malId];
+      return next.slice(-HISTORY_MAX);
+    });
   }
+
+  async function onSetStatus(nextStatus: Exclude<WatchStatus, null>) {
+    if (!current) return;
+    const prev = entries[current.mal_id] ?? {
+      status: null,
+      rating: null,
+      updatedAt: 0,
+    };
+    const updated: UserEntry = {
+      ...prev,
+      status: nextStatus,
+      updatedAt: Date.now(),
+    };
+    setEntries((e) => ({ ...e, [current.mal_id]: updated }));
+    pushHistory(current.mal_id);
+
+    if (isAuthed) {
+      await syncToMal(current.mal_id, async () => {
+        await malUpdateStatus({
+          mal_id: current.mal_id,
+          status: nextStatus,
+        });
+      });
+    } else {
+      lsSetStatus(current.mal_id, nextStatus);
+    }
+  }
+
+  async function onSetRating(nextRating: number | null) {
+    if (!current) return;
+    const prev = entries[current.mal_id] ?? {
+      status: null,
+      rating: null,
+      updatedAt: 0,
+    };
+    const updated: UserEntry = {
+      ...prev,
+      rating: nextRating,
+      updatedAt: Date.now(),
+    };
+    setEntries((e) => ({ ...e, [current.mal_id]: updated }));
+    if (nextRating != null) pushHistory(current.mal_id);
+
+    if (isAuthed) {
+      await syncToMal(current.mal_id, async () => {
+        await malUpdateStatus({
+          mal_id: current.mal_id,
+          status: prev.status ?? "plan",
+          score: nextRating,
+        });
+      });
+    } else {
+      lsSetRating(current.mal_id, nextRating);
+    }
+  }
+
+  async function onRemoveFromList() {
+    if (!current) return;
+    setEntries((e) => ({
+      ...e,
+      [current.mal_id]: { status: null, rating: null, updatedAt: Date.now() },
+    }));
+
+    if (isAuthed) {
+      await syncToMal(current.mal_id, async () => {
+        await malUpdateStatus({ mal_id: current.mal_id, status: null });
+      });
+    } else {
+      lsSetStatus(current.mal_id, null);
+      lsSetRating(current.mal_id, null);
+    }
+  }
+
+  useEffect(() => {
+    if (sync.state !== "ok") return;
+    const t = setTimeout(() => setSync({ state: "idle" }), 2000);
+    return () => clearTimeout(t);
+  }, [sync]);
+
+  useEffect(() => {
+    if (visible.length === 0) {
+      if (index !== 0) setIndex(0);
+      return;
+    }
+    if (index > visible.length - 1) setIndex(visible.length - 1);
+  }, [visible.length, index]);
 
   if (error) {
     return (
@@ -145,9 +299,19 @@ export default function App() {
   }
 
   if (!current) {
+    const markedCount = Object.values(entries).filter(entryHasMark).length;
     return (
-      <div className="h-full flex items-center justify-center text-[var(--color-muted)]">
-        Yükleniyor…
+      <div className="h-full flex flex-col items-center justify-center gap-2 text-[var(--color-muted)]">
+        <div className="text-sm">
+          {loadingList
+            ? `Yükleniyor… (MAL listendeki ${markedCount} anime atlanıyor)`
+            : "Yükleniyor…"}
+        </div>
+        {list.length > 0 && (
+          <div className="text-xs">
+            {list.length} anime kontrol edildi, filtrelenmemiş aranıyor
+          </div>
+        )}
       </div>
     );
   }
@@ -168,7 +332,6 @@ export default function App() {
 
   return (
     <div className="h-full w-full flex flex-col">
-      {/* Top bar */}
       <header className="flex items-center justify-between px-6 py-3 border-b border-[var(--color-border)] bg-[var(--color-panel)]">
         <div className="flex items-center gap-3">
           <h1 className="text-lg font-semibold tracking-wide">
@@ -177,12 +340,12 @@ export default function App() {
             </span>
           </h1>
           <span className="text-xs text-[var(--color-muted)]">
-            v0 · Jikan / localStorage
+            {isAuthed ? "MAL sync" : "v0 · localStorage"}
           </span>
         </div>
         <div className="flex items-center gap-3 text-sm text-[var(--color-muted)]">
           <span>
-            {index + 1} / {list.length}
+            {index + 1} / {visible.length}
           </span>
           <div className="flex gap-1">
             <button
@@ -195,21 +358,59 @@ export default function App() {
             </button>
             <button
               className="px-2 py-1 rounded border border-[var(--color-border)] hover:bg-[var(--color-panel-2)] disabled:opacity-40"
-              disabled={index >= list.length - 1}
+              disabled={index >= visible.length - 1}
               onClick={() =>
-                setIndex((i) => Math.min(list.length - 1, i + 1))
+                setIndex((i) => Math.min(visible.length - 1, i + 1))
               }
               title="Sonraki (↓ / →)"
             >
               ↓
             </button>
           </div>
+          {auth && (
+            isAuthed ? (
+              <div className="flex items-center gap-2">
+                {sync.state === "syncing" && (
+                  <span className="text-xs text-[var(--color-muted)]">
+                    MAL'a yazılıyor…
+                  </span>
+                )}
+                {sync.state === "ok" && (
+                  <span className="text-xs text-emerald-400">
+                    ✓ MAL'a kaydedildi
+                  </span>
+                )}
+                {sync.state === "error" && (
+                  <span
+                    className="text-xs text-red-400"
+                    title={sync.message}
+                  >
+                    ⚠ Senkronizasyon hatası
+                  </span>
+                )}
+                <span className="text-[var(--color-text)]">
+                  {auth.user.name}
+                </span>
+                <a
+                  href="/api/auth/logout"
+                  className="text-xs px-2 py-1 rounded border border-[var(--color-border)] hover:bg-[var(--color-panel-2)]"
+                >
+                  Çıkış
+                </a>
+              </div>
+            ) : (
+              <a
+                href="/api/auth/login"
+                className="text-xs px-3 py-1.5 rounded border border-[var(--color-accent)]/50 text-[var(--color-accent)] hover:bg-[var(--color-accent)]/10"
+              >
+                MAL ile giriş yap
+              </a>
+            )
+          )}
         </div>
       </header>
 
-      {/* Main grid — fills remaining height, no scroll */}
       <main className="flex-1 min-h-0 grid grid-cols-[22rem_1fr_18rem] gap-4 p-4">
-        {/* Left: cover + titles */}
         <section className="min-h-0 flex flex-col gap-3">
           <div className="relative rounded-xl overflow-hidden border border-[var(--color-border)] bg-[var(--color-panel)] flex-1 min-h-0">
             {cover && (
@@ -254,7 +455,6 @@ export default function App() {
           </div>
         </section>
 
-        {/* Center: synopsis + genre + extra pics */}
         <section className="min-h-0 flex flex-col gap-3">
           <div className="flex flex-wrap gap-1.5">
             {current.type && (
@@ -309,25 +509,23 @@ export default function App() {
           )}
         </section>
 
-        {/* Right: actions */}
         <aside className="min-h-0 flex flex-col gap-3">
           <div className="rounded-xl border border-[var(--color-border)] bg-[var(--color-panel)] p-3">
             <div className="text-xs uppercase tracking-wider text-[var(--color-muted)] mb-2">
               Durum
             </div>
             <div className="grid grid-cols-2 gap-2">
-              {(
-                ["watched", "watching", "plan", "dropped"] as const
-              ).map((s) => {
+              {(["watched", "watching", "plan", "dropped"] as const).map((s) => {
                 const active = entry.status === s;
                 return (
                   <button
                     key={s}
-                    onClick={() => onSetStatus(active ? null : s)}
+                    disabled={active}
+                    onClick={() => onSetStatus(s)}
                     className={[
                       "text-sm px-2 py-2 rounded-lg border transition",
                       active
-                        ? "bg-[var(--color-accent)]/20 border-[var(--color-accent)] text-[var(--color-accent)]"
+                        ? "bg-[var(--color-accent)]/20 border-[var(--color-accent)] text-[var(--color-accent)] cursor-default"
                         : "border-[var(--color-border)] hover:bg-[var(--color-panel-2)] text-[var(--color-text)]",
                     ].join(" ")}
                   >
@@ -358,11 +556,12 @@ export default function App() {
                 return (
                   <button
                     key={n}
-                    onClick={() => onSetRating(active ? null : n)}
+                    disabled={active}
+                    onClick={() => onSetRating(n)}
                     className={[
                       "text-sm py-1.5 rounded-md border transition",
                       active
-                        ? "bg-[var(--color-accent-2)]/20 border-[var(--color-accent-2)] text-[var(--color-accent-2)]"
+                        ? "bg-[var(--color-accent-2)]/20 border-[var(--color-accent-2)] text-[var(--color-accent-2)] cursor-default"
                         : "border-[var(--color-border)] hover:bg-[var(--color-panel-2)]",
                     ].join(" ")}
                   >
@@ -378,6 +577,15 @@ export default function App() {
               </div>
             )}
           </div>
+
+          {(entry.status != null || entry.rating != null) && (
+            <button
+              onClick={onRemoveFromList}
+              className="text-xs px-2 py-1.5 rounded border border-red-900/50 text-red-400 hover:bg-red-950/30 transition"
+            >
+              Listeden çıkar
+            </button>
+          )}
 
           <a
             href={current.url}
