@@ -52,6 +52,13 @@ function malListToEntries(items: MalListItem[]): Record<string, UserEntry> {
   return out;
 }
 
+const HISTORY_MAX = 5;
+
+function entryHasMark(e: UserEntry | undefined): boolean {
+  if (!e) return false;
+  return e.status != null || e.rating != null;
+}
+
 export default function App() {
   const [list, setList] = useState<Anime[]>([]);
   const [page, setPage] = useState(1);
@@ -62,6 +69,7 @@ export default function App() {
   const [entries, setEntries] = useState<Record<string, UserEntry>>(
     () => getAllEntries()
   );
+  const [history, setHistory] = useState<number[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [sync, setSync] = useState<
     | { state: "idle" }
@@ -70,7 +78,16 @@ export default function App() {
     | { state: "error"; message: string }
   >({ state: "idle" });
 
-  const current = list[index];
+  const historySet = useMemo(() => new Set(history), [history]);
+  const visible = useMemo(
+    () =>
+      list.filter(
+        (a) => !entryHasMark(entries[a.mal_id]) || historySet.has(a.mal_id)
+      ),
+    [list, entries, historySet]
+  );
+
+  const current = visible[index];
   const isAuthed = auth?.authenticated === true;
 
   useEffect(() => {
@@ -107,8 +124,8 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (!list.length) return;
-    if (index < list.length - 5) return;
+    if (!visible.length) return;
+    if (index < visible.length - 5) return;
     if (loadingList) return;
     const next = page + 1;
     setLoadingList(true);
@@ -122,7 +139,7 @@ export default function App() {
       })
       .catch(() => {})
       .finally(() => setLoadingList(false));
-  }, [index, list.length, page, loadingList]);
+  }, [index, visible.length, page, loadingList]);
 
   useEffect(() => {
     if (!current) return;
@@ -136,8 +153,8 @@ export default function App() {
     };
   }, [current?.mal_id]);
 
-  const listLenRef = useRef(list.length);
-  listLenRef.current = list.length;
+  const listLenRef = useRef(visible.length);
+  listLenRef.current = visible.length;
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement | null;
@@ -178,6 +195,14 @@ export default function App() {
     }
   }
 
+  function pushHistory(malId: number) {
+    setHistory((h) => {
+      const without = h.filter((id) => id !== malId);
+      const next = [...without, malId];
+      return next.slice(-HISTORY_MAX);
+    });
+  }
+
   async function onSetStatus(nextStatus: Exclude<WatchStatus, null>) {
     if (!current) return;
     const prev = entries[current.mal_id] ?? {
@@ -191,6 +216,7 @@ export default function App() {
       updatedAt: Date.now(),
     };
     setEntries((e) => ({ ...e, [current.mal_id]: updated }));
+    pushHistory(current.mal_id);
 
     if (isAuthed) {
       await syncToMal(current.mal_id, async () => {
@@ -217,6 +243,7 @@ export default function App() {
       updatedAt: Date.now(),
     };
     setEntries((e) => ({ ...e, [current.mal_id]: updated }));
+    if (nextRating != null) pushHistory(current.mal_id);
 
     if (isAuthed) {
       await syncToMal(current.mal_id, async () => {
@@ -253,6 +280,14 @@ export default function App() {
     const t = setTimeout(() => setSync({ state: "idle" }), 2000);
     return () => clearTimeout(t);
   }, [sync]);
+
+  useEffect(() => {
+    if (visible.length === 0) {
+      if (index !== 0) setIndex(0);
+      return;
+    }
+    if (index > visible.length - 1) setIndex(visible.length - 1);
+  }, [visible.length, index]);
 
   if (error) {
     return (
@@ -299,7 +334,7 @@ export default function App() {
         </div>
         <div className="flex items-center gap-3 text-sm text-[var(--color-muted)]">
           <span>
-            {index + 1} / {list.length}
+            {index + 1} / {visible.length}
           </span>
           <div className="flex gap-1">
             <button
@@ -312,9 +347,9 @@ export default function App() {
             </button>
             <button
               className="px-2 py-1 rounded border border-[var(--color-border)] hover:bg-[var(--color-panel-2)] disabled:opacity-40"
-              disabled={index >= list.length - 1}
+              disabled={index >= visible.length - 1}
               onClick={() =>
-                setIndex((i) => Math.min(list.length - 1, i + 1))
+                setIndex((i) => Math.min(visible.length - 1, i + 1))
               }
               title="Sonraki (↓ / →)"
             >
