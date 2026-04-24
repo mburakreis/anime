@@ -124,9 +124,10 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (!visible.length) return;
-    if (index < visible.length - 5) return;
     if (loadingList) return;
+    if (!list.length) return;
+    const needMore = visible.length === 0 || index >= visible.length - 5;
+    if (!needMore) return;
     const next = page + 1;
     setLoadingList(true);
     getTopAnime(next)
@@ -139,7 +140,7 @@ export default function App() {
       })
       .catch(() => {})
       .finally(() => setLoadingList(false));
-  }, [index, visible.length, page, loadingList]);
+  }, [index, visible.length, list.length, page, loadingList]);
 
   useEffect(() => {
     if (!current) return;
@@ -298,9 +299,19 @@ export default function App() {
   }
 
   if (!current) {
+    const markedCount = Object.values(entries).filter(entryHasMark).length;
     return (
-      <div className="h-full flex items-center justify-center text-[var(--color-muted)]">
-        Yükleniyor…
+      <div className="h-full flex flex-col items-center justify-center gap-2 text-[var(--color-muted)]">
+        <div className="text-sm">
+          {loadingList
+            ? `Yükleniyor… (MAL listendeki ${markedCount} anime atlanıyor)`
+            : "Yükleniyor…"}
+        </div>
+        {list.length > 0 && (
+          <div className="text-xs">
+            {list.length} anime kontrol edildi, filtrelenmemiş aranıyor
+          </div>
+        )}
       </div>
     );
   }
