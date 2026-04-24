@@ -62,10 +62,11 @@ export async function updateStatus(input: {
   score?: number | null;
 }): Promise<void> {
   if (input.status === null && input.score === undefined) {
-    await fetch(`/api/mal/status?mal_id=${input.mal_id}`, {
+    const r = await fetch(`/api/mal/status?mal_id=${input.mal_id}`, {
       method: "DELETE",
       credentials: "same-origin",
     });
+    if (!r.ok) throw new Error(`MAL delete failed (${r.status})`);
     return;
   }
   const body: Record<string, unknown> = { mal_id: input.mal_id };
@@ -73,10 +74,14 @@ export async function updateStatus(input: {
     body.status = input.status === null ? undefined : toMalStatus(input.status);
   }
   if (input.score !== undefined) body.score = input.score ?? 0;
-  await fetch("/api/mal/status", {
+  const r = await fetch("/api/mal/status", {
     method: "PUT",
     credentials: "same-origin",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
+  if (!r.ok) {
+    const text = await r.text().catch(() => "");
+    throw new Error(`MAL update failed (${r.status})${text ? `: ${text}` : ""}`);
+  }
 }

@@ -63,6 +63,12 @@ export default function App() {
     () => getAllEntries()
   );
   const [error, setError] = useState<string | null>(null);
+  const [sync, setSync] = useState<
+    | { state: "idle" }
+    | { state: "syncing" }
+    | { state: "ok"; at: number }
+    | { state: "error"; message: string }
+  >({ state: "idle" });
 
   const current = list[index];
   const isAuthed = auth?.authenticated === true;
@@ -158,6 +164,20 @@ export default function App() {
     return entries[current.mal_id] ?? getEntry(current.mal_id);
   }, [current, entries]);
 
+  async function syncToMal(malId: number, fn: () => Promise<void>) {
+    setSync({ state: "syncing" });
+    try {
+      await fn();
+      setSync({ state: "ok", at: Date.now() });
+    } catch (err) {
+      setSync({
+        state: "error",
+        message: err instanceof Error ? err.message : String(err),
+      });
+      console.error("MAL sync error", { malId, err });
+    }
+  }
+
   async function onSetStatus(nextStatus: WatchStatus) {
     if (!current) return;
     const prev = entries[current.mal_id] ?? {
@@ -173,7 +193,7 @@ export default function App() {
     setEntries((e) => ({ ...e, [current.mal_id]: updated }));
 
     if (isAuthed) {
-      try {
+      await syncToMal(current.mal_id, async () => {
         if (nextStatus === null && prev.rating == null) {
           await malUpdateStatus({ mal_id: current.mal_id, status: null });
         } else {
@@ -182,7 +202,7 @@ export default function App() {
             status: nextStatus ?? "plan",
           });
         }
-      } catch {}
+      });
     } else {
       lsSetStatus(current.mal_id, nextStatus);
     }
@@ -203,7 +223,7 @@ export default function App() {
     setEntries((e) => ({ ...e, [current.mal_id]: updated }));
 
     if (isAuthed) {
-      try {
+      await syncToMal(current.mal_id, async () => {
         if (nextRating == null && prev.status == null) {
           await malUpdateStatus({ mal_id: current.mal_id, status: null });
         } else {
@@ -213,11 +233,17 @@ export default function App() {
             score: nextRating ?? 0,
           });
         }
-      } catch {}
+      });
     } else {
       lsSetRating(current.mal_id, nextRating);
     }
   }
+
+  useEffect(() => {
+    if (sync.state !== "ok") return;
+    const t = setTimeout(() => setSync({ state: "idle" }), 2000);
+    return () => clearTimeout(t);
+  }, [sync]);
 
   if (error) {
     return (
@@ -289,6 +315,24 @@ export default function App() {
           {auth && (
             isAuthed ? (
               <div className="flex items-center gap-2">
+                {sync.state === "syncing" && (
+                  <span className="text-xs text-[var(--color-muted)]">
+                    MAL'a yazılıyor…
+                  </span>
+                )}
+                {sync.state === "ok" && (
+                  <span className="text-xs text-emerald-400">
+                    ✓ MAL'a kaydedildi
+                  </span>
+                )}
+                {sync.state === "error" && (
+                  <span
+                    className="text-xs text-red-400"
+                    title={sync.message}
+                  >
+                    ⚠ Senkronizasyon hatası
+                  </span>
+                )}
                 <span className="text-[var(--color-text)]">
                   {auth.user.name}
                 </span>
