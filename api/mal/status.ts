@@ -1,5 +1,5 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import { getFreshAccessToken, malFetch, withErrorHandling } from "../_lib";
+import { getFreshAccessToken, malFetch, withErrorHandling } from "../_lib.js";
 
 export default withErrorHandling(async function handler(
   req: VercelRequest,

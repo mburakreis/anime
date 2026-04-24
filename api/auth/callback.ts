@@ -10,7 +10,7 @@ import {
   serializeCookie,
   setAuthCookies,
   withErrorHandling,
-} from "../_lib";
+} from "../_lib.js";
 
 export default withErrorHandling(async function handler(
   req: VercelRequest,

@@ -9,7 +9,7 @@ import {
   redirectUri,
   serializeCookie,
   withErrorHandling,
-} from "../_lib";
+} from "../_lib.js";
 
 export default withErrorHandling(function handler(
   req: VercelRequest,
