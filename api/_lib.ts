@@ -15,6 +15,44 @@ export function env(name: string): string {
   return v;
 }
 
+export function withErrorHandling(
+  handler: (req: VercelRequest, res: VercelResponse) => Promise<void> | void
+) {
+  return async (req: VercelRequest, res: VercelResponse) => {
+    try {
+      await handler(req, res);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      const stack = err instanceof Error ? err.stack : undefined;
+      console.error("[api-error]", req.method, req.url, message, stack);
+      if (res.headersSent) return;
+      const wantsHtml =
+        (req.headers.accept ?? "").includes("text/html") &&
+        !(req.headers.accept ?? "").includes("application/json");
+      if (wantsHtml) {
+        res
+          .status(500)
+          .setHeader("Content-Type", "text/html; charset=utf-8")
+          .send(
+            `<h1>API error</h1><pre>${escapeHtml(message)}</pre>` +
+              `<p><a href="/">Return</a></p>`
+          );
+      } else {
+        res.status(500).json({ error: "internal", message });
+      }
+    }
+  };
+}
+
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
 export function getOrigin(req: VercelRequest): string {
   const proto = (req.headers["x-forwarded-proto"] as string) || "http";
   const host = req.headers.host ?? "localhost:3000";

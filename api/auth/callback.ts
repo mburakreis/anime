@@ -9,9 +9,13 @@ import {
   redirectUri,
   serializeCookie,
   setAuthCookies,
+  withErrorHandling,
 } from "../_lib";
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
+export default withErrorHandling(async function handler(
+  req: VercelRequest,
+  res: VercelResponse
+) {
   const { code, state, error } = req.query as Record<string, string>;
   if (error) {
     res.status(400).send(`MAL auth error: ${error}`);
@@ -66,4 +70,4 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   setAuthCookies(res, data.access_token, data.refresh_token, data.expires_in);
 
   res.redirect(302, "/");
-}
+});

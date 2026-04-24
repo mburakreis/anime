@@ -1,7 +1,10 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import { getFreshAccessToken, malFetch } from "../_lib";
+import { getFreshAccessToken, malFetch, withErrorHandling } from "../_lib";
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
+export default withErrorHandling(async function handler(
+  req: VercelRequest,
+  res: VercelResponse
+) {
   const token = await getFreshAccessToken(req, res);
   if (!token) {
     res.status(200).json({ authenticated: false });
@@ -14,4 +17,4 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
   const data = await r.json();
   res.status(200).json({ authenticated: true, user: data });
-}
+});

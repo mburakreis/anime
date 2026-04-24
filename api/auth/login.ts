@@ -8,9 +8,13 @@ import {
   randomString,
   redirectUri,
   serializeCookie,
+  withErrorHandling,
 } from "../_lib";
 
-export default function handler(req: VercelRequest, res: VercelResponse) {
+export default withErrorHandling(function handler(
+  req: VercelRequest,
+  res: VercelResponse
+) {
   const verifier = randomString(48);
   const state = randomString(16);
 
@@ -33,4 +37,4 @@ export default function handler(req: VercelRequest, res: VercelResponse) {
   });
 
   res.redirect(302, `${MAL_AUTH_URL}?${params.toString()}`);
-}
+});

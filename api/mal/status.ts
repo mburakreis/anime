@@ -1,7 +1,10 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import { getFreshAccessToken, malFetch } from "../_lib";
+import { getFreshAccessToken, malFetch, withErrorHandling } from "../_lib";
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
+export default withErrorHandling(async function handler(
+  req: VercelRequest,
+  res: VercelResponse
+) {
   const token = await getFreshAccessToken(req, res);
   if (!token) {
     res.status(401).json({ error: "unauthenticated" });
@@ -30,11 +33,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return;
   }
 
-  const body = (req.body ?? {}) as {
-    mal_id?: number;
-    status?: string;
-    score?: number | null;
-  };
+  let body: { mal_id?: number; status?: string; score?: number | null } = {};
+  if (typeof req.body === "string") {
+    try {
+      body = JSON.parse(req.body);
+    } catch {
+      res.status(400).json({ error: "invalid JSON body" });
+      return;
+    }
+  } else if (req.body && typeof req.body === "object") {
+    body = req.body as typeof body;
+  }
   const malId = Number(body.mal_id);
   if (!malId) {
     res.status(400).json({ error: "mal_id required" });
@@ -59,4 +68,4 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
   const data = await r.json();
   res.status(200).json(data);
-}
+});

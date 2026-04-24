@@ -1,7 +1,10 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import { getFreshAccessToken, malFetch } from "../_lib";
+import { getFreshAccessToken, malFetch, withErrorHandling } from "../_lib";
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
+export default withErrorHandling(async function handler(
+  req: VercelRequest,
+  res: VercelResponse
+) {
   const token = await getFreshAccessToken(req, res);
   if (!token) {
     res.status(401).json({ error: "unauthenticated" });
@@ -50,4 +53,4 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   res.setHeader("Cache-Control", "private, max-age=30");
   res.status(200).json({ items });
-}
+});
