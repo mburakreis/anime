@@ -178,7 +178,7 @@ export default function App() {
     }
   }
 
-  async function onSetStatus(nextStatus: WatchStatus) {
+  async function onSetStatus(nextStatus: Exclude<WatchStatus, null>) {
     if (!current) return;
     const prev = entries[current.mal_id] ?? {
       status: null,
@@ -194,14 +194,10 @@ export default function App() {
 
     if (isAuthed) {
       await syncToMal(current.mal_id, async () => {
-        if (nextStatus === null && prev.rating == null) {
-          await malUpdateStatus({ mal_id: current.mal_id, status: null });
-        } else {
-          await malUpdateStatus({
-            mal_id: current.mal_id,
-            status: nextStatus ?? "plan",
-          });
-        }
+        await malUpdateStatus({
+          mal_id: current.mal_id,
+          status: nextStatus,
+        });
       });
     } else {
       lsSetStatus(current.mal_id, nextStatus);
@@ -224,18 +220,31 @@ export default function App() {
 
     if (isAuthed) {
       await syncToMal(current.mal_id, async () => {
-        if (nextRating == null && prev.status == null) {
-          await malUpdateStatus({ mal_id: current.mal_id, status: null });
-        } else {
-          await malUpdateStatus({
-            mal_id: current.mal_id,
-            status: prev.status ?? "plan",
-            score: nextRating ?? 0,
-          });
-        }
+        await malUpdateStatus({
+          mal_id: current.mal_id,
+          status: prev.status ?? "plan",
+          score: nextRating,
+        });
       });
     } else {
       lsSetRating(current.mal_id, nextRating);
+    }
+  }
+
+  async function onRemoveFromList() {
+    if (!current) return;
+    setEntries((e) => ({
+      ...e,
+      [current.mal_id]: { status: null, rating: null, updatedAt: Date.now() },
+    }));
+
+    if (isAuthed) {
+      await syncToMal(current.mal_id, async () => {
+        await malUpdateStatus({ mal_id: current.mal_id, status: null });
+      });
+    } else {
+      lsSetStatus(current.mal_id, null);
+      lsSetRating(current.mal_id, null);
     }
   }
 
@@ -465,11 +474,12 @@ export default function App() {
                 return (
                   <button
                     key={s}
-                    onClick={() => onSetStatus(active ? null : s)}
+                    disabled={active}
+                    onClick={() => onSetStatus(s)}
                     className={[
                       "text-sm px-2 py-2 rounded-lg border transition",
                       active
-                        ? "bg-[var(--color-accent)]/20 border-[var(--color-accent)] text-[var(--color-accent)]"
+                        ? "bg-[var(--color-accent)]/20 border-[var(--color-accent)] text-[var(--color-accent)] cursor-default"
                         : "border-[var(--color-border)] hover:bg-[var(--color-panel-2)] text-[var(--color-text)]",
                     ].join(" ")}
                   >
@@ -500,11 +510,12 @@ export default function App() {
                 return (
                   <button
                     key={n}
-                    onClick={() => onSetRating(active ? null : n)}
+                    disabled={active}
+                    onClick={() => onSetRating(n)}
                     className={[
                       "text-sm py-1.5 rounded-md border transition",
                       active
-                        ? "bg-[var(--color-accent-2)]/20 border-[var(--color-accent-2)] text-[var(--color-accent-2)]"
+                        ? "bg-[var(--color-accent-2)]/20 border-[var(--color-accent-2)] text-[var(--color-accent-2)] cursor-default"
                         : "border-[var(--color-border)] hover:bg-[var(--color-panel-2)]",
                     ].join(" ")}
                   >
@@ -520,6 +531,15 @@ export default function App() {
               </div>
             )}
           </div>
+
+          {(entry.status != null || entry.rating != null) && (
+            <button
+              onClick={onRemoveFromList}
+              className="text-xs px-2 py-1.5 rounded border border-red-900/50 text-red-400 hover:bg-red-950/30 transition"
+            >
+              Listeden çıkar
+            </button>
+          )}
 
           <a
             href={current.url}
