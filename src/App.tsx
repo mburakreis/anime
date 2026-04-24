@@ -1,7 +1,20 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { getPictures, getTopAnime } from "./jikan";
 import type { Anime, Picture, UserEntry, WatchStatus } from "./types";
-import { getAllEntries, getEntry, setRating, setStatus } from "./storage";
+import {
+  getAllEntries,
+  getEntry,
+  setRating as lsSetRating,
+  setStatus as lsSetStatus,
+} from "./storage";
+import {
+  fetchAuth,
+  fetchList,
+  fromMalStatus,
+  updateStatus as malUpdateStatus,
+  type AuthInfo,
+  type MalListItem,
+} from "./mal";
 
 const STATUS_LABELS: Record<Exclude<WatchStatus, null>, string> = {
   watched: "İzledim",
@@ -20,15 +33,23 @@ function romajiTitle(a: Anime): string {
 }
 
 function englishTitle(a: Anime): string | null {
-  return (
-    a.title_english ??
-    titleOfType(a, "English") ??
-    null
-  );
+  return a.title_english ?? titleOfType(a, "English") ?? null;
 }
 
 function japaneseTitle(a: Anime): string | null {
   return a.title_japanese ?? titleOfType(a, "Japanese") ?? null;
+}
+
+function malListToEntries(items: MalListItem[]): Record<string, UserEntry> {
+  const out: Record<string, UserEntry> = {};
+  for (const it of items) {
+    out[it.mal_id] = {
+      status: fromMalStatus(it.status),
+      rating: it.score > 0 ? it.score : null,
+      updatedAt: Date.parse(it.updated_at) || 0,
+    };
+  }
+  return out;
 }
 
 export default function App() {
@@ -37,23 +58,41 @@ export default function App() {
   const [loadingList, setLoadingList] = useState(false);
   const [index, setIndex] = useState(0);
   const [pictures, setPictures] = useState<Picture[]>([]);
+  const [auth, setAuth] = useState<AuthInfo | null>(null);
   const [entries, setEntries] = useState<Record<string, UserEntry>>(
     () => getAllEntries()
   );
   const [error, setError] = useState<string | null>(null);
 
   const current = list[index];
+  const isAuthed = auth?.authenticated === true;
 
-  // Load first page
+  useEffect(() => {
+    fetchAuth()
+      .then(setAuth)
+      .catch(() => setAuth({ authenticated: false }));
+  }, []);
+
+  useEffect(() => {
+    if (!isAuthed) return;
+    let cancelled = false;
+    fetchList()
+      .then((items) => {
+        if (cancelled) return;
+        setEntries(malListToEntries(items));
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [isAuthed]);
+
   useEffect(() => {
     let cancelled = false;
     setLoadingList(true);
     setError(null);
     getTopAnime(1)
-      .then((data) => {
-        if (cancelled) return;
-        setList(data);
-      })
+      .then((data) => !cancelled && setList(data))
       .catch((e) => !cancelled && setError(String(e)))
       .finally(() => !cancelled && setLoadingList(false));
     return () => {
@@ -61,7 +100,6 @@ export default function App() {
     };
   }, []);
 
-  // Load more when nearing the end
   useEffect(() => {
     if (!list.length) return;
     if (index < list.length - 5) return;
@@ -80,7 +118,6 @@ export default function App() {
       .finally(() => setLoadingList(false));
   }, [index, list.length, page, loadingList]);
 
-  // Fetch pictures for current anime
   useEffect(() => {
     if (!current) return;
     let cancelled = false;
@@ -93,9 +130,6 @@ export default function App() {
     };
   }, [current?.mal_id]);
 
-  // Arrow key navigation
-  const indexRef = useRef(index);
-  indexRef.current = index;
   const listLenRef = useRef(list.length);
   listLenRef.current = list.length;
   useEffect(() => {
@@ -124,16 +158,65 @@ export default function App() {
     return entries[current.mal_id] ?? getEntry(current.mal_id);
   }, [current, entries]);
 
-  function onSetStatus(status: WatchStatus) {
+  async function onSetStatus(nextStatus: WatchStatus) {
     if (!current) return;
-    const next = setStatus(current.mal_id, status);
-    setEntries((e) => ({ ...e, [current.mal_id]: next }));
+    const prev = entries[current.mal_id] ?? {
+      status: null,
+      rating: null,
+      updatedAt: 0,
+    };
+    const updated: UserEntry = {
+      ...prev,
+      status: nextStatus,
+      updatedAt: Date.now(),
+    };
+    setEntries((e) => ({ ...e, [current.mal_id]: updated }));
+
+    if (isAuthed) {
+      try {
+        if (nextStatus === null && prev.rating == null) {
+          await malUpdateStatus({ mal_id: current.mal_id, status: null });
+        } else {
+          await malUpdateStatus({
+            mal_id: current.mal_id,
+            status: nextStatus ?? "plan",
+          });
+        }
+      } catch {}
+    } else {
+      lsSetStatus(current.mal_id, nextStatus);
+    }
   }
 
-  function onSetRating(rating: number | null) {
+  async function onSetRating(nextRating: number | null) {
     if (!current) return;
-    const next = setRating(current.mal_id, rating);
-    setEntries((e) => ({ ...e, [current.mal_id]: next }));
+    const prev = entries[current.mal_id] ?? {
+      status: null,
+      rating: null,
+      updatedAt: 0,
+    };
+    const updated: UserEntry = {
+      ...prev,
+      rating: nextRating,
+      updatedAt: Date.now(),
+    };
+    setEntries((e) => ({ ...e, [current.mal_id]: updated }));
+
+    if (isAuthed) {
+      try {
+        if (nextRating == null && prev.status == null) {
+          await malUpdateStatus({ mal_id: current.mal_id, status: null });
+        } else {
+          await malUpdateStatus({
+            mal_id: current.mal_id,
+            status: prev.status ?? "plan",
+            score: nextRating ?? 0,
+          });
+        }
+      } catch {}
+    } else {
+      lsSetRating(current.mal_id, nextRating);
+    }
   }
 
   if (error) {
@@ -168,7 +251,6 @@ export default function App() {
 
   return (
     <div className="h-full w-full flex flex-col">
-      {/* Top bar */}
       <header className="flex items-center justify-between px-6 py-3 border-b border-[var(--color-border)] bg-[var(--color-panel)]">
         <div className="flex items-center gap-3">
           <h1 className="text-lg font-semibold tracking-wide">
@@ -177,7 +259,7 @@ export default function App() {
             </span>
           </h1>
           <span className="text-xs text-[var(--color-muted)]">
-            v0 · Jikan / localStorage
+            {isAuthed ? "MAL sync" : "v0 · localStorage"}
           </span>
         </div>
         <div className="flex items-center gap-3 text-sm text-[var(--color-muted)]">
@@ -204,12 +286,32 @@ export default function App() {
               ↓
             </button>
           </div>
+          {auth && (
+            isAuthed ? (
+              <div className="flex items-center gap-2">
+                <span className="text-[var(--color-text)]">
+                  {auth.user.name}
+                </span>
+                <a
+                  href="/api/auth/logout"
+                  className="text-xs px-2 py-1 rounded border border-[var(--color-border)] hover:bg-[var(--color-panel-2)]"
+                >
+                  Çıkış
+                </a>
+              </div>
+            ) : (
+              <a
+                href="/api/auth/login"
+                className="text-xs px-3 py-1.5 rounded border border-[var(--color-accent)]/50 text-[var(--color-accent)] hover:bg-[var(--color-accent)]/10"
+              >
+                MAL ile giriş yap
+              </a>
+            )
+          )}
         </div>
       </header>
 
-      {/* Main grid — fills remaining height, no scroll */}
       <main className="flex-1 min-h-0 grid grid-cols-[22rem_1fr_18rem] gap-4 p-4">
-        {/* Left: cover + titles */}
         <section className="min-h-0 flex flex-col gap-3">
           <div className="relative rounded-xl overflow-hidden border border-[var(--color-border)] bg-[var(--color-panel)] flex-1 min-h-0">
             {cover && (
@@ -254,7 +356,6 @@ export default function App() {
           </div>
         </section>
 
-        {/* Center: synopsis + genre + extra pics */}
         <section className="min-h-0 flex flex-col gap-3">
           <div className="flex flex-wrap gap-1.5">
             {current.type && (
@@ -309,16 +410,13 @@ export default function App() {
           )}
         </section>
 
-        {/* Right: actions */}
         <aside className="min-h-0 flex flex-col gap-3">
           <div className="rounded-xl border border-[var(--color-border)] bg-[var(--color-panel)] p-3">
             <div className="text-xs uppercase tracking-wider text-[var(--color-muted)] mb-2">
               Durum
             </div>
             <div className="grid grid-cols-2 gap-2">
-              {(
-                ["watched", "watching", "plan", "dropped"] as const
-              ).map((s) => {
+              {(["watched", "watching", "plan", "dropped"] as const).map((s) => {
                 const active = entry.status === s;
                 return (
                   <button
